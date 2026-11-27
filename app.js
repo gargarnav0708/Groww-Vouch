@@ -102,44 +102,47 @@ function companyByTicker(ticker){return companies.find(c=>c.ticker===ticker)||re
 function mapCompany(c){return {...c,monogram:c.monogram||String(c.name||c.ticker).split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase(),business:c.business||'Business profile will appear when verified company-source material is connected.',segments:c.segments||[]}}
 function renderHoldings(){document.getElementById('holdingList').innerHTML=companies.map(c=>`<button class="holding ${selectedCompany&&c.ticker===selectedCompany.ticker?'selected':''}" data-ticker="${escapeHtml(c.ticker)}" title="${escapeHtml(c.name)}"><span class="holding-logo">${escapeHtml(c.monogram)}</span><span class="holding-name">${escapeHtml(c.name)}</span><span class="holding-ticker">${escapeHtml(c.ticker)}</span></button>`).join('')||'<div class="holding-empty">No portfolio companies loaded</div>';document.getElementById('holdingCount').textContent=companies.length}
 const CATEGORY_META = {
-  results: { label: 'Quarterly Results', icon: '📊', color: 'teal' },
-  'M&A': { label: 'M&A / Acquisition', icon: '🤝', color: 'amber' },
-  fund_raise: { label: 'Fund Raising', icon: '💰', color: 'amber' },
-  management_change: { label: 'Leadership Change', icon: '👤', color: 'purple' },
-  litigation: { label: 'Legal / Regulatory', icon: '⚖️', color: 'red' },
-  insider_trading: { label: 'Insider Action', icon: '🔍', color: 'amber' },
-  earnings_call: { label: 'Concall Transcript', icon: '🎙️', color: 'blue' },
-  investor_meetings: { label: 'Investor Meet', icon: '👥', color: 'subtle' },
-  credit_rating: { label: 'Credit Rating', icon: '⭐', color: 'blue' },
-  dividend: { label: 'Dividend Declared', icon: '💵', color: 'teal' },
-  bonus_split: { label: 'Bonus / Split', icon: '✂️', color: 'blue' },
-  capex: { label: 'Capex / Expansion', icon: '🏗️', color: 'teal' },
-  press_release: { label: 'Company Update', icon: '📢', color: 'blue' },
-  postal_ballot: { label: 'Postal Ballot', icon: '🗳️', color: 'subtle' },
-  agm_egm: { label: 'Shareholder Meet', icon: '🏛️', color: 'subtle' },
-  pledging: { label: 'Promoter Pledge', icon: '⚠️', color: 'red' },
-  unclassified: { label: 'Exchange Filing', icon: '📄', color: 'subtle' }
+  results: { label: 'Quarterly Results', color: 'teal' },
+  'M&A': { label: 'M&A / Acquisition', color: 'amber' },
+  fund_raise: { label: 'Fund Raising', color: 'amber' },
+  management_change: { label: 'Leadership Change', color: 'purple' },
+  litigation: { label: 'Legal / Regulatory', color: 'red' },
+  insider_trading: { label: 'Insider Action', color: 'amber' },
+  earnings_call: { label: 'Concall Transcript', color: 'blue' },
+  investor_meetings: { label: 'Investor Meet', color: 'subtle' },
+  credit_rating: { label: 'Credit Rating', color: 'blue' },
+  dividend: { label: 'Dividend', color: 'teal' },
+  bonus_split: { label: 'Bonus / Split', color: 'blue' },
+  capex: { label: 'Capex / Expansion', color: 'teal' },
+  press_release: { label: 'Company Update', color: 'blue' },
+  postal_ballot: { label: 'Postal Ballot', color: 'subtle' },
+  agm_egm: { label: 'Shareholder Meet', color: 'subtle' },
+  pledging: { label: 'Promoter Pledge', color: 'red' },
+  unclassified: { label: 'Exchange Filing', color: 'subtle' }
 };
 
 function humanCategory(cat) {
   if (!cat) return 'Exchange Filing';
   const meta = CATEGORY_META[cat];
-  if (meta) return `${meta.icon} ${meta.label}`;
+  if (meta) return meta.label;
   return cat.replaceAll('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
 }
 
 function humanPriority(p) {
-  if (p === 'high') return '<span class="pill-badge pill-high">🔥 High Impact</span>';
-  if (p === 'medium') return '<span class="pill-badge pill-medium">👀 Watch</span>';
+  if (p === 'high') return '<span class="pill-badge pill-high"><span class="pill-dot"></span>High Impact</span>';
+  if (p === 'medium') return '<span class="pill-badge pill-medium"><span class="pill-dot"></span>Watch</span>';
   return '<span class="pill-badge pill-routine">Routine</span>';
 }
+
+const BOOKMARK_SVG_EMPTY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>';
+const BOOKMARK_SVG_FILLED = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>';
 
 function renderResultsContext(result,ticker){if(!result)return '';if(result.status!=='available')return `<div class="result-strip result-unavailable">${escapeHtml(result.message||'Results were identified, but validated financial observations are not available yet.')}</div>`;const labels={revenue:'Revenue',ebitda:'EBITDA',pbt:'PBT',pat:'PAT'};const metricRows=Object.entries(labels).map(([key,label])=>{const metric=result.metrics?.[key];if(!metric)return `<div class="result-metric unavailable"><strong>${label}</strong><span>Not available</span></div>`;const q=metric.qoq,y=metric.yoy;const change=x=>x?.status==='available'?`${Number(x.percentage_change).toFixed(1)}%`:'Not available';const prior=x=>x?.status==='available'?`${Number(x.previous_value_in_crore).toLocaleString('en-IN',{maximumFractionDigits:2})} Cr`:'Not available';const source=new URL(metric.source_url||metric.evidence_url,API_BASE_URL).href;return `<div class="result-metric"><strong>${label}</strong><b>${Number(metric.value_in_crore).toLocaleString('en-IN',{maximumFractionDigits:2})} Cr</b><small>${escapeHtml(metric.reported_value_raw||'')} ${escapeHtml(metric.reported_unit||'')} · ${escapeHtml(metric.fiscal_quarter||'')} ${escapeHtml(metric.fiscal_year||'')}</small><span>QoQ ${prior(q)} (${change(q)}) · YoY ${prior(y)} (${change(y)})</span><a href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer">${escapeHtml(metric.document_title||'Source filing')}${metric.page_number?` · p.${metric.page_number}`:''} ↗</a></div>`}).join('');return `<div class="result-intelligence"><div class="result-intelligence-head"><strong>${escapeHtml(result.fiscal_quarter||'')} ${escapeHtml(result.fiscal_year||'')} · ${escapeHtml(result.statement_basis||'consolidated')} · INR crore</strong><span>Validated filing values</span></div><div class="result-metrics-grid">${metricRows}</div><button data-result-company="${escapeHtml(ticker)}">Open financial research ↗</button></div>`}
 function renderActivity(){
   const priority=document.getElementById('priorityFilter').value,category=document.getElementById('categoryFilter').value;
   const source=dataMode==='live'?digestAnnouncements:announcements;
   let list=source.filter(a=>(showRoutine||a.priority!=='routine')&&(priority==='all'||a.priority===priority)&&(category==='all'||a.category===category));
-  document.getElementById('activityList').innerHTML=list.length?list.map(a=>{const attachment=safeUrl(a.attachment_url)||safeUrl(a.source_page_url);const result=a.results_context;const resultHtml=renderResultsContext(result,a.ticker);return `<article class="activity-item" data-id="${escapeHtml(a.id)}"><div class="activity-symbol ${escapeHtml(a.tone||'')}">${escapeHtml(a.icon||'▤')}</div><div class="activity-main"><div class="activity-top"><strong>${escapeHtml(a.company)}</strong><span class="activity-ticker">${escapeHtml(a.ticker)}</span><span class="activity-category">${escapeHtml(humanCategory(a.category))}</span>${humanPriority(a.priority)}</div><h3 class="activity-title">${escapeHtml(a.title)}</h3><p class="activity-summary">${escapeHtml(dataMode==='live'?a.materiality_reason:a.summary||'No issuer details were included with this filing.')}</p>${resultHtml}<div class="activity-bottom"><span class="source-text">${escapeHtml(a.source)}</span><span>·</span><span>${escapeHtml(a.time)}</span>${attachment?`<a class="source-link" href="${escapeHtml(attachment)}" target="_blank" rel="noopener noreferrer">Source Filing ↗</a>`:''}</div></div><button class="bookmark ${savedIds.has(a.id)?'saved':''}" aria-label="${savedIds.has(a.id)?'Remove saved item':'Save item'}" data-save="${escapeHtml(a.id)}">${savedIds.has(a.id)?'◆':'♧'}</button></article>`}).join(''):`<div class="empty-filter">${announcementError?escapeHtml(announcementError):dataMode==='live'?'No dated portfolio announcements fall inside this window.':'No announcements match these filters.'}</div>`;
+  document.getElementById('activityList').innerHTML=list.length?list.map(a=>{const attachment=safeUrl(a.attachment_url)||safeUrl(a.source_page_url);const result=a.results_context;const resultHtml=renderResultsContext(result,a.ticker);return `<article class="activity-item" data-id="${escapeHtml(a.id)}"><div class="activity-symbol ${escapeHtml(a.tone||'')}">${escapeHtml(a.icon||'▤')}</div><div class="activity-main"><div class="activity-top"><strong>${escapeHtml(a.company)}</strong><span class="activity-ticker">${escapeHtml(a.ticker)}</span><span class="activity-category">${escapeHtml(humanCategory(a.category))}</span>${humanPriority(a.priority)}</div><h3 class="activity-title">${escapeHtml(a.title)}</h3><p class="activity-summary">${escapeHtml(dataMode==='live'?a.materiality_reason:a.summary||'No issuer details were included with this filing.')}</p>${resultHtml}<div class="activity-bottom"><span class="source-text">${escapeHtml(a.source)}</span><span>·</span><span>${escapeHtml(a.time)}</span>${attachment?`<a class="source-link" href="${escapeHtml(attachment)}" target="_blank" rel="noopener noreferrer">Source Filing ↗</a>`:''}</div></div><button class="bookmark ${savedIds.has(a.id)?'saved':''}" aria-label="${savedIds.has(a.id)?'Remove saved item':'Save item'}" data-save="${escapeHtml(a.id)}">${savedIds.has(a.id)?BOOKMARK_SVG_FILLED:BOOKMARK_SVG_EMPTY}</button></article>`}).join(''):`<div class="empty-filter">${announcementError?escapeHtml(announcementError):dataMode==='live'?'No dated portfolio announcements fall inside this window.':'No announcements match these filters.'}</div>`;
   document.getElementById('feedTotal').textContent=`${list.length} ${list.length===1?'item':'items'}`;
   const routineCount=source.filter(a=>a.priority==='routine').length;
   document.getElementById('loadMore').textContent=showRoutine?'Hide routine items ↑':`Show ${routineCount} routine filings ↓`;
@@ -415,7 +418,7 @@ function miniResults(rc){
     const yoyText=y==null?'—':`${y>=0?'+':''}${y.toFixed(1)}% YoY`;
     return `<div class="mini-tile"><span class="mini-lbl">${l}</span><b class="mini-val">₹${Number(m.value_in_crore).toLocaleString('en-IN',{maximumFractionDigits:0})} Cr</b><span class="mini-yoy ${y==null?'':y>=0?'up':'down'}">${yoyText}</span></div>`;
   };
-  const verifiedBadge=rc.verification==='verified'?'<span class="v-badge verified">✓ Auto-Verified (PBT − Tax = PAT)</span>':rc.verification==='unverified'?'<span class="v-badge unverified">⚠️ Unverified Filing</span>':'<span class="v-badge">Exchange Filing</span>';
+  const verifiedBadge=rc.verification==='verified'?'<span class="v-badge verified">Verified (PBT − Tax = PAT)</span>':rc.verification==='unverified'?'<span class="v-badge unverified">Unverified Filing</span>':'<span class="v-badge">Exchange Filing</span>';
   return `<div class="mini-results-container"><div class="mini-results-grid">${cell('revenue','Revenue')}${cell('pat','Net Profit')}${cell('ebitda','EBITDA')}${cell('pbt','PBT')}</div><div class="mini-results-bar">${verifiedBadge}<span class="mini-period">${escapeHtml(rc.fiscal_quarter||'')} ${escapeHtml(rc.fiscal_year||'')}</span></div></div>`;
 }
 function renderTopCards(){
@@ -432,7 +435,7 @@ function renderTopCards(){
     const src=safeUrl(a.attachment_url)||safeUrl(a.source_page_url);
     const headline=a.summary_line||a.title;
     const contextLine=(a.summary_line&&a.title!==a.summary_line)?a.title:'';
-    return `<article class="top-card ${escapeHtml(a.priority)}" data-id="${escapeHtml(a.id)}"><div class="top-card-meta"><div class="top-card-company"><span class="company-monogram-chip">${escapeHtml(a.ticker.slice(0,2))}</span><div><strong class="company-name-text">${escapeHtml(a.company)}</strong><span class="company-ticker-tag">${escapeHtml(a.ticker)}</span></div></div><span class="top-cat-pill">${escapeHtml(humanCategory(a.category))}</span></div><div class="top-card-content"><h4 class="top-card-headline">${escapeHtml(headline)}</h4>${contextLine?`<p class="top-card-sub">${escapeHtml(contextLine)}</p>`:''}</div>${body}<div class="top-card-foot"><span class="card-time-text">🕒 ${escapeHtml(a.time)}</span><div class="card-foot-actions">${src?`<a class="card-filing-link" href="${escapeHtml(src)}" target="_blank" rel="noopener noreferrer" title="View exchange PDF filing">Filing ↗</a>`:''}<button class="card-research-btn" data-top-company="${escapeHtml(a.ticker)}">Deep Dive →</button></div></div></article>`}).join('')}</div>`;
+    return `<article class="top-card ${escapeHtml(a.priority)}" data-id="${escapeHtml(a.id)}"><div class="top-card-meta"><div class="top-card-company"><span class="company-monogram-chip">${escapeHtml(a.ticker.slice(0,2))}</span><div><strong class="company-name-text">${escapeHtml(a.company)}</strong><span class="company-ticker-tag">${escapeHtml(a.ticker)}</span></div></div><span class="top-cat-pill">${escapeHtml(humanCategory(a.category))}</span></div><div class="top-card-content"><h4 class="top-card-headline">${escapeHtml(headline)}</h4>${contextLine?`<p class="top-card-sub">${escapeHtml(contextLine)}</p>`:''}</div>${body}<div class="top-card-foot"><span class="card-time-text">${escapeHtml(a.time)}</span><div class="card-foot-actions">${src?`<a class="card-filing-link" href="${escapeHtml(src)}" target="_blank" rel="noopener noreferrer" title="View exchange PDF filing">Filing ↗</a>`:''}<button class="card-research-btn" data-top-company="${escapeHtml(a.ticker)}">Deep Dive →</button></div></div></article>`}).join('')}</div>`;
   host.querySelectorAll('[data-top-company]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();selectCompany(b.dataset.topCompany);showView('research')}));
   host.querySelectorAll('.top-card').forEach(c=>c.addEventListener('click',e=>{if(e.target.closest('a,button'))return;openDetail(c.dataset.id)}));
 }

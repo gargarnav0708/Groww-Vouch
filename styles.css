@@ -345,3 +345,52 @@ body.demo-mode .mode-toggle{border-color:#6b4a1f;color:var(--amber)}
 .breadcrumb strong{font:700 15px var(--display);color:var(--text);letter-spacing:-.2px}
 .app-brand-pill{background:var(--teal);color:#0a1714;font:800 10px var(--mono);padding:2px 7px;border-radius:4px;letter-spacing:.6px}
 
+/* ---- Right Column & Laptop Layout Fixes ---- */
+@media(min-width:821px){
+  .content-grid{grid-template-columns:minmax(0,1fr) 310px;gap:32px;align-items:start}
+}
+.right-column{display:grid;gap:16px;align-content:start}
+.side-card,.desk-note{border-radius:12px;padding:18px;border:1px solid var(--line);background:var(--surface);box-shadow:0 2px 12px rgba(0,0,0,.15)}
+.side-card h3{font:700 14.5px/1.3 var(--display);color:var(--text);margin:10px 0 6px}
+.side-card>p{font-size:12px;color:var(--muted);line-height:1.5}
+.signal-rows{gap:10px;margin-top:16px}
+.signal-rows>div{font-size:12px;color:#b4c2c5}
+.signal-rows b{font:600 12px var(--mono);color:var(--text)}
+
+/* Fix .signal-note span selector overlap */
+.signal-note{display:flex;align-items:flex-start;gap:9px;border-top:1px solid var(--line-soft);margin-top:16px;padding-top:14px;color:var(--muted);font-size:11.5px;line-height:1.45}
+.signal-note span{display:inline;width:auto;height:auto;border:0;border-radius:0;margin:0;font:inherit;place-items:initial}
+.signal-note .signal-note-icon{display:inline-grid;place-items:center;flex-shrink:0;width:16px;height:16px;border:1px solid #485b57;border-radius:50%;font:600 10px var(--mono);color:var(--teal);margin-top:1px}
+
+/* Triggered Alerts & Actions */
+.alert-event{padding:12px 0;border-top:1px solid var(--line-soft)}
+.alert-event-top strong{font:600 12.5px var(--display);color:var(--text)}
+.alert-event-top span,.alert-event-top small{font:10px var(--mono);color:var(--muted)}
+.alert-event p{font-size:12px;line-height:1.5;color:#a8b8bc;margin:6px 0}
+.alert-event>small{font-size:10.5px;color:var(--subtle)}
+.alert-event a{color:var(--teal);font-weight:600}
+
+.alert-actions-stack{display:grid;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft)}
+.alert-refresh{width:100%;margin-top:0;padding:9px 12px;border-radius:8px;border:1px solid #2b3f3a;background:var(--surface-2);color:#b9d8cd;font:600 11.5px var(--font);text-align:center;cursor:pointer;transition:background .15s ease,border-color .15s ease}
+.alert-refresh:hover{background:#1b2c27;border-color:var(--teal);color:var(--text)}
+.refresh-data-button{background:rgba(118,210,189,.08);border-color:rgba(118,210,189,.25);color:var(--teal)}
+.refresh-data-button:hover{background:rgba(118,210,189,.16)}
+.source-freshness{font-size:10.5px;color:var(--subtle);margin-top:8px;text-align:center}
+
+/* Clean Pill Dots (No Emojis) */
+.pill-dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.pill-high .pill-dot{background:var(--amber)}
+.pill-medium .pill-dot{background:var(--teal)}
+
+/* Desk Note Polish */
+.desk-note{background:linear-gradient(145deg,#13211e 0,var(--surface) 80%);border-color:rgba(118,210,189,.22);gap:12px}
+.desk-note strong{font:700 13px var(--display);color:var(--text)}
+.desk-note p{font-size:12px;line-height:1.5;color:var(--muted);margin:4px 0 10px}
+.desk-note button{font:600 12px var(--font);color:var(--teal)}
+
+.saved-empty{margin-top:14px;gap:12px}
+.bookmark-outline{color:var(--muted);display:grid;place-items:center}
+.saved-empty strong{font:600 12.5px var(--display);color:var(--text)}
+.saved-empty p{font-size:11.5px;color:var(--muted);margin:3px 0 0}
+
+
