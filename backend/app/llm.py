@@ -1,0 +1,324 @@
+"""Two-tier model router with a persistent response cache.
+
+FINN sends bulk, well-specified extraction work (reading a results table, pulling guidance
+out of a transcript) to a cheap "fast" model and keeps the "strong" model for the one step
+that needs judgement: comparing what management promised with what was delivered.
+
+Every call is keyed by (tier model, prompt version, inputs) and stored in ``llm_calls``, so a
+filing or transcript is only ever read by a model once; repeat requests are free.
+
+Any OpenAI-compatible chat-completions endpoint works. Defaults target Google Gemini's
+OpenAI-compatible endpoint (free tier: Flash-Lite for bulk work, Flash for reasoning).
+
+Environment:
+    FINN_LLM_API_KEY      (or GEMINI_API_KEY)   required to enable model features
+    FINN_LLM_BASE_URL     default https://generativelanguage.googleapis.com/v1beta/openai
+    FINN_LLM_FAST_MODEL   default gemini-3.5-flash-lite
+    FINN_LLM_STRONG_MODEL default gemini-3.8-flash
+    FINN_LLM_FAST_RPM / FINN_LLM_STRONG_RPM     client-side pacing (default 12 / 8)
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import re
+import logging
+import threading
+import time
+from dataclasses import dataclass, replace
+
+import requests
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .models import LLMCall
+
+log = logging.getLogger("finn.llm")
+DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+_pace_lock = threading.Lock()
+_last_call: dict[str, float] = {}
+
+
+class LLMUnavailable(RuntimeError):
+    """Raised when no model is configured or the provider could not return usable JSON."""
+
+
+@dataclass(frozen=True)
+class TierConfig:
+    tier: str
+    model: str
+    base_url: str
+    api_key: str
+    rpm: float
+    reasoning_effort: str | None = None
+    fallbacks: tuple[str, ...] = ()
+    max_input_tokens: int = 0
+    max_output_tokens: int = 0
+
+
+def _env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
+def tier_config(tier: str) -> TierConfig | None:
+    """Each tier can point at its own provider: FINN_LLM_<TIER>_BASE_URL / _API_KEY override the shared ones.
+
+    Typical free setup: fast tier on Gemini (long documents, generous free quota), strong tier on Groq
+    (gpt-oss-120b; fast, free, but ~8k tokens/minute, so inputs are sized to fit).
+    """
+    if tier not in {"fast", "strong"}:
+        raise ValueError(f"Unknown model tier: {tier}")
+    up = tier.upper()
+    key = _env(f"FINN_LLM_{up}_API_KEY") or _env("FINN_LLM_API_KEY") or _env("GEMINI_API_KEY")
+    base = (_env(f"FINN_LLM_{up}_BASE_URL") or _env("FINN_LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+    gemini, groq = "googleapis.com" in base, "groq.com" in base
+    defaults = {
+        ("fast", "gemini"): ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite,gemini-flash-lite-latest", "none", 12),
+        ("strong", "gemini"): ("gemini-3.8-flash", "gemini-3.7-flash,gemini-flash-latest", "low", 8),
+        ("fast", "groq"): ("openai/gpt-oss-20b", "", "low", 25),
+        ("strong", "groq"): ("openai/gpt-oss-120b", "", "low", 20),
+    }
+    kind = "gemini" if gemini else "groq" if groq else "other"
+    d_model, d_fallbacks, d_effort, d_rpm = defaults.get((tier, kind), ("", "", "", 10))
+    model = _env(f"FINN_LLM_{up}_MODEL") or _env("FINN_LLM_MODEL") or d_model
+    if not key or not model:
+        return None
+    rpm = float(_env(f"FINN_LLM_{up}_RPM") or d_rpm)
+    effort = _env(f"FINN_LLM_{up}_REASONING_EFFORT") or d_effort
+    raw = _env(f"FINN_LLM_{up}_FALLBACKS") or d_fallbacks
+    fallbacks = tuple(m.strip() for m in raw.split(",") if m.strip() and m.strip() != model)
+    # Per-request token budget. Groq's free plan allows ~8k tokens/minute per model, and a single
+    # request larger than that is rejected, so prompts are sized to fit (see input_budget()).
+    max_in = int(_env(f"FINN_LLM_{up}_MAX_INPUT_TOKENS") or (5200 if groq else 0))
+    max_out = int(_env(f"FINN_LLM_{up}_MAX_OUTPUT_TOKENS") or (2600 if groq else 0))
+    return TierConfig(tier=tier, model=model, base_url=base, api_key=key, rpm=max(rpm, 0.1), reasoning_effort=effort or None,
+                      fallbacks=fallbacks, max_input_tokens=max_in, max_output_tokens=max_out)
+
+
+def estimate_tokens(text: str) -> int:
+    return int(len(text) / 3.6) + 1
+
+
+def input_budget(tier: str) -> int | None:
+    """Tokens of document context a caller may send to this tier (None = effectively unlimited)."""
+    config = tier_config(tier)
+    if config is None or not config.max_input_tokens:
+        return None
+    return config.max_input_tokens
+
+
+def is_configured() -> bool:
+    return tier_config("fast") is not None
+
+
+def status() -> dict:
+    fast, strong = tier_config("fast"), tier_config("strong")
+    return {
+        "configured": fast is not None,
+        "fast_model": fast.model if fast else None,
+        "strong_model": strong.model if strong else None,
+        "base_url": fast.base_url if fast else None,
+    }
+
+
+def _cache_key(model: str, prompt_version: str, system: str, user: str, images: list[bytes] | None) -> str:
+    digest = hashlib.sha256()
+    for part in (model, prompt_version, system, user):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x00")
+    for image in images or []:
+        digest.update(hashlib.sha256(image).digest())
+    return digest.hexdigest()
+
+
+def _pace(config: TierConfig) -> None:
+    interval = 60.0 / config.rpm
+    with _pace_lock:
+        wait = _last_call.get(config.model, 0.0) + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[config.model] = time.monotonic()
+
+
+def parse_json_text(text: str) -> dict:
+    """Parse a JSON object from a model reply, tolerating code fences and leading prose."""
+    cleaned = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.S)
+    if fence:
+        cleaned = fence.group(1).strip()
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        value = json.loads(cleaned[start:end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("Model reply was JSON but not an object")
+    return value
+
+
+def _post(config: TierConfig, messages: list[dict], max_tokens: int, timeout: int) -> tuple[dict, dict]:
+    payload = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    if config.reasoning_effort:
+        payload["reasoning_effort"] = config.reasoning_effort
+    headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+    last_error = "no attempt"
+    for attempt in range(5):
+        _pace(config)
+        try:
+            response = requests.post(f"{config.base_url}/chat/completions", json=payload, headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(2 * (attempt + 1))
+            continue
+        if response.status_code == 429 or response.status_code >= 500:
+            last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+            if response.status_code == 503 and attempt >= 1:
+                break  # model overloaded: switch to the fallback model rather than waiting it out
+            retry_after = response.headers.get("Retry-After")
+            time.sleep(float(retry_after) if retry_after and retry_after.replace('.', '', 1).isdigit() else min(6 * 2 ** attempt, 45))
+            continue
+        if response.status_code == 400 and "reasoning_effort" in payload:
+            payload.pop("reasoning_effort")  # model rejects this thinking setting; retry without it
+            continue
+        if response.status_code == 400 and "response_format" in payload:
+            payload.pop("response_format")  # some models reject strict JSON mode; the prompt still asks for JSON
+            continue
+        if response.status_code >= 400:
+            raise LLMUnavailable(f"HTTP {response.status_code}: {response.text[:500]}")
+        body = response.json()
+        content = body["choices"][0]["message"].get("content") or ""
+        return parse_json_text(content), body.get("usage") or {}
+    raise LLMUnavailable(f"Model provider unavailable after retries ({last_error})")
+
+
+def complete_json(
+    db: Session,
+    *,
+    tier: str,
+    purpose: str,
+    prompt_version: str,
+    system: str,
+    user: str,
+    images: list[bytes] | None = None,
+    max_tokens: int = 4096,
+    timeout: int = 120,
+    fallback_to_fast: bool = True,
+) -> tuple[dict, dict]:
+    """Return (parsed JSON, call metadata). Cached by inputs; raises LLMUnavailable."""
+    config = tier_config(tier)
+    if config is None:
+        raise LLMUnavailable("No model provider is configured (set FINN_LLM_API_KEY).")
+    key = _cache_key(config.model, prompt_version, system, user, images)
+    cached = db.scalar(select(LLMCall).where(LLMCall.cache_key == key))
+    if cached is not None and cached.status == "success" and cached.response_json is not None:
+        cached.cache_hits += 1
+        db.commit()
+        return cached.response_json, {"model": cached.model, "tier": cached.tier, "cached": True, "call_id": cached.id}
+
+    content: list[dict] | str
+    if images:
+        content = [{"type": "text", "text": user}] + [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(image).decode()}}
+            for image in images
+        ]
+    else:
+        content = user
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
+    if config.max_output_tokens:
+        max_tokens = min(max_tokens, config.max_output_tokens)
+    if images and "groq.com" in config.base_url:
+        messages[1]["content"] = user  # text-only models: the page text is already in the prompt
+    too_large = bool(config.max_input_tokens) and estimate_tokens(system + user) > config.max_input_tokens
+    started = time.monotonic()
+    db.commit()  # never hold a SQLite lock across a slow network call
+    errors: list[str] = []
+    used = config
+    parsed = usage = None
+    if tier == "strong":
+        timeout = max(timeout, 240)  # reasoning models think before answering
+    rounds = max(1, int(_env("FINN_LLM_ROUNDS") or 3))
+    chain = [m for r in range(rounds) for m in (config.model, *config.fallbacks)]
+    if too_large:
+        errors.append(f"{config.model}: request (~{estimate_tokens(system + user)} tokens) exceeds this provider's per-request budget ({config.max_input_tokens})")
+        chain = []
+    for attempt_index, model in enumerate(chain):
+        if attempt_index and attempt_index % (1 + len(config.fallbacks)) == 0:
+            # Every model failed this round. Wait out a transient overload (503 / timeouts),
+            # but don't burn time if the only problem is an exhausted daily quota (429).
+            if errors and all("HTTP 429" in e for e in errors[-(1 + len(config.fallbacks)):]):
+                break
+            wait = 30 * (attempt_index // (1 + len(config.fallbacks)))
+            log.warning("all %s models busy for %s; retrying the chain in %ss", tier, purpose, wait)
+            time.sleep(wait)
+        used = replace(config, model=model)
+        try:
+            parsed, usage = _post(used, messages, max_tokens, timeout)
+            break
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            errors.append(f"{model}: unparseable reply: {exc}"[:400])  # e.g. truncated JSON; try the next model
+            continue
+        except LLMUnavailable as exc:
+            errors.append(f"{model}: {exc}"[:400])
+            log.warning("model %s unavailable for %s: %s", model, purpose, str(exc)[:200])
+            if "HTTP 4" in str(exc) and "HTTP 429" not in str(exc) and "HTTP 404" not in str(exc):
+                chain = chain[:attempt_index + 1]
+                break  # a request error will not be fixed by another model
+    if parsed is None:
+        reason = " | ".join(errors[-6:])
+        if tier == "strong" and fallback_to_fast and tier_config("fast") and tier_config("fast").model != config.model:
+            # Free-tier quotas on the reasoning model are small; degrade rather than fail the workflow.
+            _record(db, key, purpose, config, prompt_version, "error", None, reason, {}, started)
+            result, meta = complete_json(db, tier="fast", purpose=purpose, prompt_version=prompt_version, system=system,
+                                         user=user, images=images, max_tokens=max_tokens, timeout=timeout, fallback_to_fast=False)
+            return result, {**meta, "degraded_from": config.model, "degraded_reason": reason[:600]}
+        _record(db, key, purpose, config, prompt_version, "error", None, reason, {}, started)
+        raise LLMUnavailable(reason)
+    row = _record(db, key, purpose, used, prompt_version, "success", parsed, None, usage, started)
+    return parsed, {"model": used.model, "tier": tier, "cached": False, "call_id": row.id}
+
+
+def _record(db: Session, key: str, purpose: str, config: TierConfig, prompt_version: str, status: str,
+            parsed: dict | None, error: str | None, usage: dict, started: float) -> LLMCall:
+    row = db.scalar(select(LLMCall).where(LLMCall.cache_key == key))
+    if row is None:
+        row = LLMCall(cache_key=key, purpose=purpose, tier=config.tier, model=config.model, prompt_version=prompt_version, status=status)
+        db.add(row)
+    row.status, row.response_json, row.error = status, parsed, error
+    row.input_tokens = int(usage.get("prompt_tokens") or 0)
+    row.output_tokens = int(usage.get("completion_tokens") or 0)
+    row.latency_ms = int((time.monotonic() - started) * 1000)
+    db.commit()
+    return row
+
+
+def usage_summary(db: Session) -> dict:
+    rows = db.scalars(select(LLMCall)).all()
+    by_purpose: dict[str, dict] = {}
+    for row in rows:
+        bucket = by_purpose.setdefault(row.purpose, {"calls": 0, "cache_hits": 0, "input_tokens": 0, "output_tokens": 0, "errors": 0, "models": set()})
+        bucket["calls"] += 1
+        bucket["cache_hits"] += row.cache_hits
+        bucket["input_tokens"] += row.input_tokens
+        bucket["output_tokens"] += row.output_tokens
+        bucket["errors"] += row.status != "success"
+        bucket["models"].add(row.model)
+    for bucket in by_purpose.values():
+        bucket["models"] = sorted(bucket["models"])
+    return {
+        **status(),
+        "total_calls": len(rows),
+        "total_cache_hits": sum(r.cache_hits for r in rows),
+        "input_tokens": sum(r.input_tokens for r in rows),
+        "output_tokens": sum(r.output_tokens for r in rows),
+        "by_purpose": by_purpose,
+    }

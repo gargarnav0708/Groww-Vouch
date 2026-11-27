@@ -1,0 +1,14 @@
+{
+  "name": "Groww Vouch — Retail Stock Diligence",
+  "short_name": "Vouch",
+  "description": "Cut through market hype. Verify what management promised against what they actually delivered before you buy.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b1115",
+  "theme_color": "#0b1115",
+  "icons": [
+    {"src": "/icons/vouch-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icons/vouch-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
