@@ -53,8 +53,31 @@ def write_snapshot(include_pdfs: bool = False) -> dict:
 
 def restore_snapshot_if_needed() -> dict | None:
     target = _sqlite_path()
-    if target is None or target.exists() or not DB_SNAPSHOT.exists():
+    if target is None or not DB_SNAPSHOT.exists():
         return None
+
+    # If target already exists, verify its integrity.
+    # If it is malformed, truncated, or corrupted (e.g. cloud-sync issues), purge and restore fresh.
+    if target.exists():
+        healthy = False
+        try:
+            with sqlite3.connect(target) as conn:
+                check = conn.execute("PRAGMA quick_check").fetchone()
+                if check and check[0] == "ok":
+                    healthy = True
+        except Exception:
+            healthy = False
+        if healthy:
+            return None
+        # Purge corrupted DB and WAL/SHM sidecars
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            sidecar = Path(str(target) + suffix)
+            if sidecar.exists():
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass
+
     target.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(DB_SNAPSHOT, "rb") as packed, target.open("wb") as out:
         shutil.copyfileobj(packed, out)
